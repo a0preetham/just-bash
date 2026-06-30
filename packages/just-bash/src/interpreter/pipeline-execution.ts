@@ -47,6 +47,14 @@ export async function executePipeline(
   const isMultiCommandPipeline = node.commands.length > 1;
   const savedLastArg = ctx.state.lastArg;
 
+  // Track groupStdin after the first pipeline command so we can restore it
+  // afterwards. Non-first commands must not see groupStdin (they get their
+  // stdin from the pipe), but clearing it permanently breaks while-loop `read`
+  // calls in subsequent iterations. We capture the value *after* the first
+  // command so that any stdin advancement it made (e.g. `read` inside a
+  // subshell) is preserved — matching real bash's shared-fd behaviour.
+  let groupStdinAfterFirstCmd: string | undefined = ctx.state.groupStdin;
+
   for (let i = 0; i < node.commands.length; i++) {
     const command = node.commands[i];
     const isLast = i === node.commands.length - 1;
@@ -113,6 +121,13 @@ export async function executePipeline(
         }
         throw error;
       }
+    }
+
+    // After the first command completes, snapshot groupStdin so we know how
+    // far stdin was advanced (e.g. by a `read` inside a subshell). This is
+    // the value we'll restore after the full pipeline finishes.
+    if (isMultiCommandPipeline && isFirst) {
+      groupStdinAfterFirstCmd = ctx.state.groupStdin;
     }
 
     // Restore environment for subshell commands to prevent variable assignment leakage
@@ -237,6 +252,17 @@ export async function executePipeline(
     ctx.state.lastArg = savedLastArg;
   }
   // With lastpipe, the last command already updated $_ in the main shell context
+
+  // Restore groupStdin to the value it had after the first pipeline command
+  // finished. Non-first commands cleared it (correct — they must only see
+  // stdin from the pipe), but the while loop wrapping this pipeline body
+  // still needs groupStdin for the next `read` iteration. Using the post-
+  // first-command value preserves any stdin advancement the first command
+  // made (e.g. `read` inside a subshell), matching real bash's shared-fd
+  // behaviour.
+  if (isMultiCommandPipeline) {
+    ctx.state.groupStdin = groupStdinAfterFirstCmd;
+  }
 
   return lastResult;
 }

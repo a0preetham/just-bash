@@ -272,9 +272,13 @@ export async function executeGroup(
     }
   }
 
-  // Save any existing groupStdin and set new one from pipeline
-  const savedGroupStdin = ctx.state.groupStdin;
-  if (effectiveStdin) {
+  // If the group has its own explicit stdin (heredoc, file redirect, or pipe
+  // input), install it and restore afterward. If there is no explicit stdin
+  // the group shares the outer context's groupStdin — reads inside the group
+  // should advance it, so we must not restore it on exit.
+  const groupHasOwnStdin = !!effectiveStdin;
+  const savedGroupStdin = groupHasOwnStdin ? ctx.state.groupStdin : undefined;
+  if (groupHasOwnStdin) {
     ctx.state.groupStdin = effectiveStdin;
   }
 
@@ -286,8 +290,9 @@ export async function executeGroup(
       exitCode = res.exitCode;
     }
   } catch (error) {
-    // Restore groupStdin before handling error
-    ctx.state.groupStdin = savedGroupStdin;
+    if (groupHasOwnStdin) {
+      ctx.state.groupStdin = savedGroupStdin;
+    }
     // ExecutionLimitError must always propagate - these are safety limits
     if (error instanceof ExecutionLimitError) {
       throw error;
@@ -303,8 +308,9 @@ export async function executeGroup(
     return result(stdout, `${stderr}${getErrorMessage(error)}\n`, 1);
   }
 
-  // Restore groupStdin
-  ctx.state.groupStdin = savedGroupStdin;
+  if (groupHasOwnStdin) {
+    ctx.state.groupStdin = savedGroupStdin;
+  }
 
   // Apply output redirections
   const bodyResult = result(stdout, stderr, exitCode);
